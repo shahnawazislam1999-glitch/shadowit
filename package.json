@@ -1,0 +1,20 @@
+{
+  "name": "shadowit-android",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SHADOWit - offline English shadowing practice app (HTML wrapped with Capacitor)",
+  "scripts": {
+    "apply-config": "node scripts/apply-config.js",
+    "sync": "cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/app": "^8.0.0",
+    "@capacitor/core": "^8.0.0",
+    "@capacitor/splash-screen": "^8.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.0.0"
+  },
+  "engines": { "node": ">=22" }
+}
