@@ -35,8 +35,13 @@ console.log('- manifest hardened (allowBackup=false, cleartext off)');
 // 3) app/build.gradle: version from CI, release signing, lint won't block the build
 const gradlePath = path.join(appDir, 'build.gradle');
 let g = read(gradlePath);
-g = must(g, /versionCode 1/, "versionCode (System.getenv('VERSION_CODE') ?: '1').toInteger()", 'versionCode');
-g = must(g, /versionName "1\.0"/, "versionName (System.getenv('VERSION_NAME') ?: '1.0')", 'versionName');
+g = must(g, /versionCode 1/, 'versionCode ciVersionCode', 'versionCode');
+g = must(g, /versionName "1\.0"/, 'versionName ciVersionName', 'versionName');
+g = must(g, /\nandroid \{/, `
+def ciVersionCode = Integer.parseInt(System.getenv('VERSION_CODE') ?: '1')
+def ciVersionName = System.getenv('VERSION_NAME') ?: '1.0'
+
+android {`, 'android block');
 g = must(g, /\n    buildTypes \{/, `
     signingConfigs {
         release {
