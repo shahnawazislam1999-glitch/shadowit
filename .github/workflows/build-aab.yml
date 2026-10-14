@@ -1,0 +1,134 @@
+name: Build Signed AAB + APK (release)
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  aab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # Uses the Android SDK already installed on the runner; just accept licenses.
+      - name: Accept Android SDK licenses
+        run: |
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          LIC="$SDK/licenses"
+          (mkdir -p "$LIC" || sudo mkdir -p "$LIC")
+          printf '\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n' | (tee "$LIC/android-sdk-license" >/dev/null || sudo tee "$LIC/android-sdk-license" >/dev/null)
+          echo "Licenses written to $LIC"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Apply app.config.json to legal pages
+        run: node scripts/apply-config.js
+
+      - name: Add Android platform
+        run: npx cap add android
+
+      - name: Patch Android project (icons, manifest, gradle)
+        run: node scripts/patch-android.js
+
+      - name: Sync web files into Android
+        run: npx cap sync android
+
+      # Uses your saved upload key if the 4 secrets exist, otherwise creates a new one.
+      - name: Prepare signing key
+        id: ks
+        env:
+          IN_KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          IN_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          IN_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          IN_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -e
+          KS="$RUNNER_TEMP/upload-keystore.jks"
+          if [ -n "$IN_KEYSTORE_BASE64" ] && [ -n "$IN_KEYSTORE_PASSWORD" ] && [ -n "$IN_KEY_ALIAS" ] && [ -n "$IN_KEY_PASSWORD" ]; then
+            echo "$IN_KEYSTORE_BASE64" | base64 -d > "$KS"
+            echo "KEYSTORE_PASSWORD=$IN_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "KEY_ALIAS=$IN_KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=$IN_KEY_PASSWORD" >> "$GITHUB_ENV"
+            echo "generated=false" >> "$GITHUB_OUTPUT"
+            echo "Using your saved upload key from repository secrets."
+          else
+            PW="$(openssl rand -hex 16)"
+            echo "::add-mask::$PW"
+            keytool -genkeypair -noprompt -keystore "$KS" -storetype PKCS12 \
+              -alias upload -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$PW" -keypass "$PW" \
+              -dname "CN=SHADOWit, OU=App, O=SHADOWit, C=US"
+            echo "KEYSTORE_PASSWORD=$PW" >> "$GITHUB_ENV"
+            echo "KEY_ALIAS=upload" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=$PW" >> "$GITHUB_ENV"
+            echo "generated=true" >> "$GITHUB_OUTPUT"
+            mkdir -p "$RUNNER_TEMP/keystore-backup"
+            cp "$KS" "$RUNNER_TEMP/keystore-backup/upload-keystore.jks"
+            {
+              echo "KEEP THIS FILE PRIVATE. Never share it or post it publicly."
+              echo ""
+              echo "Create these 4 repository secrets (Settings > Secrets and variables > Actions):"
+              echo "KEYSTORE_PASSWORD = $PW"
+              echo "KEY_ALIAS         = upload"
+              echo "KEY_PASSWORD      = $PW"
+              echo "KEYSTORE_BASE64   = (the one long line below)"
+              echo ""
+              base64 -w 0 "$KS"
+              echo ""
+            } > "$RUNNER_TEMP/keystore-backup/SECRETS-README.txt"
+            echo "::warning title=New upload key created::No signing secrets found, so a NEW upload key was created for this build. Add the 4 secrets (see README) so every future build uses the same key."
+          fi
+          echo "KEYSTORE_PATH=$KS" >> "$GITHUB_ENV"
+
+      - name: Build signed release AAB and APK
+        working-directory: android
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+          VERSION_NAME: 1.0.${{ github.run_number }}
+        run: |
+          chmod +x gradlew
+          ./gradlew bundleRelease assembleRelease --no-daemon --stacktrace
+
+      - name: Verify AAB is signed
+        run: |
+          jarsigner -verify android/app/build/outputs/bundle/release/app-release.aab | head -3 || true
+
+      - name: Upload AAB (upload this file to Google Play Console)
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadowit-release-aab
+          path: android/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+
+      - name: Upload signed APK (installable on your phone)
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadowit-release-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+
+      # Only uploaded for PRIVATE repos (artifacts of public repos can be downloaded by anyone).
+      - name: Upload new upload-keystore backup (PRIVATE repos only)
+        if: steps.ks.outputs.generated == 'true' && github.event.repository.private == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: KEEP-PRIVATE-upload-keystore
+          path: ${{ runner.temp }}/keystore-backup/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Public repo warning
+        if: steps.ks.outputs.generated == 'true' && github.event.repository.private == false
+        run: |
+          echo "::warning title=Make the repo PRIVATE::This repo is public, so the new upload key was NOT saved as a downloadable file. Make the repository Private (Settings > General > Danger Zone) and run this workflow again."
