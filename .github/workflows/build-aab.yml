@@ -20,8 +20,14 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      # Uses the Android SDK already installed on the runner; just accept licenses.
+      - name: Accept Android SDK licenses
+        run: |
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          LIC="$SDK/licenses"
+          (mkdir -p "$LIC" || sudo mkdir -p "$LIC")
+          printf '\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n' | (tee "$LIC/android-sdk-license" >/dev/null || sudo tee "$LIC/android-sdk-license" >/dev/null)
+          echo "Licenses written to $LIC"
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
